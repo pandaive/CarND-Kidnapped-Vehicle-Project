@@ -52,28 +52,23 @@ void ParticleFilter::prediction(double delta_t, double std_pos[], double velocit
 	//  http://www.cplusplus.com/reference/random/default_random_engine/
 	std::default_random_engine gen;
 
-	double predicted_x;
-	double predicted_y;
-	double predicted_theta;
-
 	for (int i = 0; i < num_particles; i++) {
 		if (yaw_rate != 0) {
-			predicted_x = particles[i].x + (velocity/yaw_rate)*(sin(particles[i].theta+yaw_rate*delta_t)-sin(particles[i].theta));
-			predicted_y = particles[i].y + (velocity/yaw_rate)*(cos(particles[i].theta)-cos(particles[i].theta+yaw_rate*delta_t));
-			predicted_theta = particles[i].theta + yaw_rate*delta_t;
+			particles[i].x += (velocity/yaw_rate)*(sin(particles[i].theta+yaw_rate*delta_t)-sin(particles[i].theta));
+			particles[i].y += (velocity/yaw_rate)*(cos(particles[i].theta)-cos(particles[i].theta+yaw_rate*delta_t));
+			particles[i].theta += yaw_rate*delta_t;
 		} else {
-			predicted_x = particles[i].x + velocity*delta_t*cos(particles[i].theta);
-			predicted_y = particles[i].y + velocity*delta_t*sin(particles[i].theta);
-			predicted_theta = particles[i].theta;
+			particles[i].x += velocity*delta_t*cos(particles[i].theta);
+			particles[i].y += velocity*delta_t*sin(particles[i].theta);
 		}
 
-		std::normal_distribution<double> dist_x(predicted_x, std_pos[0]);
-		std::normal_distribution<double> dist_y(predicted_y, std_pos[1]);
-		std::normal_distribution<double> dist_theta(predicted_theta, std_pos[2]);
+		std::normal_distribution<double> dist_x(particles[i].x, std_pos[0]);
+		std::normal_distribution<double> dist_y(particles[i].y, std_pos[1]);
+		std::normal_distribution<double> dist_theta(particles[i].theta, std_pos[2]);
 
-		particles[i].x = predicted_x + dist_x(gen);
-		particles[i].y = predicted_y + dist_y(gen);
-		particles[i].theta = predicted_theta + dist_theta(gen);
+		particles[i].x = dist_x(gen);
+		particles[i].y = dist_y(gen);
+		particles[i].theta = dist_theta(gen);
 	}
 }
 
@@ -84,13 +79,15 @@ void ParticleFilter::dataAssociation(std::vector<LandmarkObs> predicted, std::ve
 	//   implement this method and use it as a helper during the updateWeights phase.
 	for (int i = 0; i < observations.size(); i++) {
 		double dist_curr = std::numeric_limits<double>::max();
+		int id = -1;
 		for (int j = 0; j < predicted.size(); j++) {
 			double d = dist(observations[i].x, observations[i].y, predicted[j].x, predicted[j].y);
 			if (d < dist_curr) {
 				dist_curr = d;
-				observations[i].id = predicted[j].id;
+				id = predicted[j].id;
 			}
 		}
+		observations[i].id = id;
 	}
 
 }
@@ -109,35 +106,40 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 	//   http://planning.cs.uiuc.edu/node99.html
 
 	for (int i = 0; i < num_particles; i++) {
+
+		double p_x = particles[i].x;
+		double p_y = particles[i].y;
+		double p_theta = particles[i].theta;
+
 		std::vector<LandmarkObs> predicted;
+
 		//get predictions from map
 		for (int j = 0; j < map_landmarks.landmark_list.size(); j++) {
 			Map::single_landmark_s l = map_landmarks.landmark_list[j];
 
-			if (fabs(l.x_f - particles[i].x) <= sensor_range && fabs(l.y_f - particles[i].y) <= sensor_range) {
+			if (fabs(l.x_f - p_x) <= sensor_range && fabs(l.y_f - p_y) <= sensor_range) {
 				LandmarkObs l_obs = {l.id_i, l.x_f, l.y_f};
 				predicted.push_back(l_obs);
 			}
 		}
 
 		//transform
-		std::vector<LandmarkObs> transformed_observations(observations);
-		for (int j = 0; j < transformed_observations.size(); j++) {
-			transformed_observations[j].x = particles[i].x 
-					+ cos(particles[i].theta) * transformed_observations[j].x 
-					- sin(particles[i].theta) * transformed_observations[j].y;
+		std::vector<LandmarkObs> transformed_observations;
+		for (int j = 0; j < observations.size(); j++) {
+			double x = p_x 
+					+ cos(p_theta) * observations[j].x 
+					- sin(p_theta) * observations[j].y;
 
-			transformed_observations[j].y = particles[i].y 
-					+ sin(particles[i].theta) * transformed_observations[j].x 
-					+ cos(particles[i].theta) * transformed_observations[j].y;
+			double y = p_y 
+					+ sin(p_theta) * observations[j].x 
+					+ cos(p_theta) * observations[j].y;
+
+			LandmarkObs l_obs = {observations[j].id, x, y};
+			transformed_observations.push_back(l_obs);
 		}
 
 		//associate
 		dataAssociation(predicted, transformed_observations);
-
-		for (int j = 0; j < transformed_observations.size(); j++) {
-			particles[i].associations.push_back(transformed_observations[j].id);
-		}
 
 		//weight
 		double sig_x = std_landmark[0];
@@ -145,25 +147,34 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 
 		particles[i].weight = 1.0;
 
+		particles[i].associations.clear();
+		particles[i].sense_x.clear();
+		particles[i].sense_y.clear();
+
 		for (int j = 0; j < transformed_observations.size(); j++) {
 
-			double x, y;
+			double mu_x, mu_y;
 			for (int k = 0; k < predicted.size(); k++) {
 				if (predicted[k].id == transformed_observations[j].id) {
-					x = predicted[k].x;
-					y = predicted[k].y;
+					mu_x = predicted[k].x;
+					mu_y = predicted[k].y;
 					break;
 				}
 			}
 
-			double mu_x = transformed_observations[j].x;
-			double mu_y = transformed_observations[j].y;
+			double x = transformed_observations[j].x;
+			double y = transformed_observations[j].y;
 
 			double gauss_norm = 1/(2*M_PI*sig_x*sig_y);
 			double exponent_1 = pow(x-mu_x,2)/(2*pow(sig_x,2));
 			double exponent_2 = pow(y-mu_y,2)/(2*pow(sig_y,2));
 
-			particles[i].weight *= gauss_norm * exp(-(exponent_1+exponent_2));
+			particles[i].weight *= (gauss_norm * exp(-(exponent_1+exponent_2)));
+			weights[i] = particles[i].weight;
+
+			particles[i].associations.push_back(transformed_observations[j].id);
+			particles[i].sense_x.push_back(transformed_observations[j].x);
+			particles[i].sense_y.push_back(transformed_observations[j].y);
 		}
 	}
 
